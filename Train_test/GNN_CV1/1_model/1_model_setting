@@ -1,0 +1,76 @@
+{
+    "study_total_n_trials": 100,
+    "study_num_per_batch": 3,
+    "study_direction": "minimize",
+    "loss_mode": "MAE",
+    "eval_method": "default",
+    "modeltype_pyfilename": "GNN",
+    "opttrain_mode": "formula_GPU",
+    "dataset_edge(LIG)_filename": "_graphBiEDGE2DATA(LIG).csv",
+    "dataset_node(LIG)_filename": "_graphNODEDATA(LIG).csv",
+    "dataset(RCT)_filename": "_rawDATA(RCT).xlsx",
+    "dataset(RCTxLIG)_filename": "_rawDATA(RCTxLIG)_deltaE.xlsx",
+    "constant_node_num": 1,
+    "input_ndata_list": [
+        "boolean"
+    ],
+    "input_edata_list": [
+        "weight"
+    ],
+    "test_split": 0.2,
+    "vali_split": 0.2,
+    "stage2_converge": 1e-05,
+    "stage2_fluctuate_pc": 0.8,
+    "stage2_fluctuate_dv": 0.2,
+    "optimizer_chosen": "Adam",
+    "max_epoch_num": 10000,
+    "batch_size": 10,
+    "model": {
+        "MPNN": {
+            "hidden_dim": 1,
+            "activation": "LeakyReLU",
+            "activation_alpha": 0.01,
+            "use_bias": 0,
+            "include_edge_feat": 1,
+            "repeat_msgANDhidden_layer": 1,
+            "message_dim": 3,
+            "layer_num": 3
+        },
+        "dense_E1": {
+            "units": 1,
+            "activation": "sigmoid",
+            "use_bias": 0,
+            "kernel_regularizer": "l2",
+            "kernel_constraint": "None"
+        },
+        "dense_E2": {
+            "units": 1,
+            "activation": "sigmoid",
+            "use_bias": 0,
+            "kernel_regularizer": "l2",
+            "kernel_constraint": "NonNeg"
+        },
+        "dense_output": {
+            "units": 1,
+            "activation": "linear",
+            "use_bias": 0,
+            "kernel_regularizer": "None",
+            "kernel_constraint": "NonNeg"
+        }
+    },
+
+    "sampler_seed": 2098,
+    "devid_suffix": "_#6",
+    "study_log_input": "_optuna_VALI_",
+    "study_log_output": "study_log1",
+    "_test_mode": "None",
+    "stage1_cutoff": 6.0,
+    "Adam": {
+        "learning_rate": 0.005
+    },
+    "input_ndata_dim": 1,
+    "input_edata_dim": 1,
+
+    "training_seed": 2376,
+    "node_num_info": 31
+}
