@@ -2,8 +2,8 @@ Description
 A description of the different folders is given below:
 
 DATA: This folder contains input data for descriptors and data from palladium-catalyzed Sonogashira cross-coupling reaction using trialkyl phosphine ligands reported by Plenio et al..
-Model: This folder contains models (DNN, GNN with MPNN layer) used in this paper.
-Train_test: This folder contains model results used in this paper (GNN results, DNN, and Restricted Linear Regression results for Buried Volume (BV), Cone Angle (CA), Buried Volume with Cone Angle (BVCA), One-hot Encoding (ONEHOT), Multiple Fingerprint Features (MFF)). (__evalperform contains only the template file used by the above-mentioned folder to generate results).
+Model: This folder contains models
+Train_test: This folder contains model results
 
 Install Requirements
 Please run the following commands to install all requirements:
