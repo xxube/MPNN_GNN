@@ -74,3 +74,5 @@ class MPNN(nn.Module):
             return torch.squeeze(
                 torch.split(graph.ndata['h_n'], split_pattern)
             )
+
+
