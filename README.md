@@ -1,7 +1,7 @@
 Description
 A description of the different folders is given below:
 
-DATA: This folder contains input data for descriptors and data from palladium-catalyzed Sonogashira cross-coupling reaction using trialkyl phosphine ligands reported by Plenio et al..
+DATA: This folder contains input data for descriptors and data from palladium-catalyzed  cross-coupling reaction reported by Plenio et al.
 Model: This folder contains models
 Train_test: This folder contains model results
 
