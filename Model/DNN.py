@@ -5,9 +5,6 @@ import torch.nn.functional as F
 class CustomNeuralNetwork(nn.Module):
     def __init__(self, config):
         super(CustomNeuralNetwork, self).__init__()
-
-        # self.GNN1 = MPNN(config['MPNN'])  # Ignored as per the comment in the code
-
         self.layers = nn.ModuleDict()
 
         for block in ['dense_E1', 'dense_E2', 'dense_output']:
