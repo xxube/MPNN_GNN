@@ -4,16 +4,16 @@ import torch.nn.functional as F
 import dgl
 from MPNN_layer import MPNN
 
-class CustomModel(nn.Module):
+class AdvancedModel(nn.Module):
     def __init__(self, config):
-        super(CustomModel, self).__init__()
+        super(AdvancedModel, self).__init__()
 
         self.gnn_layer = MPNN(config['MPNN'])
 
-        self.dense_layers = nn.ModuleDict()
+        self.layer_dict = nn.ModuleDict()
 
-        for layer_name in ['dense_E1', 'dense_E2', 'dense_output']:
-            layer_config = config[layer_name]
+        for layer in ['dense_E1', 'dense_E2', 'dense_output']:
+            layer_config = config[layer]
 
             units = layer_config['units']
             activation = layer_config['activation']
@@ -44,11 +44,11 @@ class CustomModel(nn.Module):
             else:
                 activation_fn = getattr(F, activation)
 
-            self.dense_layers[layer_name] = nn.Sequential(
+            self.layer_dict[layer] = nn.Sequential(
                 dense_layer,
                 activation_fn
             )
-        
+
         self.h_constant = 6.62607015 * (10 ** -34)
         self.kb_constant = 1.380649 * (10 ** -23)
         self.j_to_kcal = 4184
@@ -56,67 +56,67 @@ class CustomModel(nn.Module):
         self.temperature = 273 + 80
         self.s_to_h = 3.6
 
-        self.use_arrhenius_eq = True
-        self.use_vertex_value = False
-        self.for_analysis = False
+        self.use_arrhenius = True
+        self.return_vertex_value = False
+        self.analysis_mode = False
 
-    def compute_arrhenius(self, Ea):
+    def calculate_arrhenius(self, Ea):
         return self.kb_constant * self.temperature / self.h_constant / self.s_to_h * torch.exp(-Ea * self.j_to_kcal / self.R_constant / self.temperature)
 
-    def disable_arrhenius(self):
-        self.use_arrhenius_eq = False
-
     def enable_arrhenius(self):
-        self.use_arrhenius_eq = True
+        self.use_arrhenius = True
 
-    def disable_vertex_value(self):
-        self.use_vertex_value = False
+    def disable_arrhenius(self):
+        self.use_arrhenius = False
 
     def enable_vertex_value(self):
-        self.use_vertex_value = True
+        self.return_vertex_value = True
 
-    def forward(self, input_data, return_full=False, return_intermediate=False, device=None, training=None):
-        intermediate_dict = {}
+    def disable_vertex_value(self):
+        self.return_vertex_value = False
+
+    def forward(self, input_data, return_full_output=False, return_intermediate_output=False, device=None, training=None):
+        intermediate_outputs = {}
 
         reactant_data, ligand_data = input_data
 
-        # process reactant data
-        reactant_inputs = torch.tensor(reactant_data, dtype=torch.float32)
+        # Process reactant data
+        reactant_tensor = torch.tensor(reactant_data, dtype=torch.float32)
 
-        # process ligand data
+        # Process ligand data
         if device is not None:
-            ligand_inputs = ligand_data.to(device)
+            ligand_tensor = ligand_data.to(device)
         else:
-            ligand_inputs = ligand_data
+            ligand_tensor = ligand_data
 
-        ligand_inputs = self.gnn_layer(lig_inputs)
-        intermediate_dict['ligand_inputs'] = lig_inputs
+        ligand_tensor = self.gnn_layer(ligand_tensor)
+        intermediate_outputs['ligand_inputs'] = ligand_tensor
 
-        # optionally return vertex value directly
-        if self.use_vertex_value:
-            return lig_inputs
+        # Optionally return vertex value directly
+        if self.return_vertex_value:
+            return ligand_tensor
 
-        if self.for_analysis:
-            return reactant_data, lig_inputs
+        if self.analysis_mode:
+            return reactant_data, ligand_tensor
 
         # Dense layer E1
-        inputs_E1 = torch.cat([reactant_inputs, lig_inputs], dim=1)
-        inputs_E1 = self.dense_layers['dense_E1'](inputs_E1)
-        intermediate_dict['inputs_E1'] = inputs_E1
+        E1_inputs = torch.cat([reactant_tensor, ligand_tensor], dim=1)
+        E1_outputs = self.layer_dict['dense_E1'](E1_inputs)
+        intermediate_outputs['inputs_E1'] = E1_outputs
 
         # Dense layer E2
-        inputs_E2 = self.dense_layers['dense_E2'](lig_inputs)
-        intermediate_dict['inputs_E2'] = inputs_E2
+        E2_outputs = self.layer_dict['dense_E2'](ligand_tensor)
+        intermediate_outputs['inputs_E2'] = E2_outputs
 
-        # concatenate E1 and E2
-        concatenated_inputs = torch.cat([inputs_E1, inputs_E2], dim=1)
-        outputs = self.dense_layers['dense_output'](concatenated_inputs)
+        # Concatenate E1 and E2
+        concatenated_inputs = torch.cat([E1_outputs, E2_outputs], dim=1)
+        final_outputs = self.layer_dict['dense_output'](concatenated_inputs)
 
-        if self.use_arrhenius_eq:
-            outputs = self.compute_arrhenius(outputs)
+        if self.use_arrhenius:
+            final_outputs = self.calculate_arrhenius(final_outputs)
 
-        if return_full:
-            return outputs, lig_inputs, self.dense_layers
-        if return_intermediate:
-            return outputs, lig_inputs, self.dense_layers, intermediate_dict
-        return outputs
+        if return_full_output:
+            return final_outputs, ligand_tensor, self.layer_dict
+        if return_intermediate_output:
+            return final_outputs, ligand_tensor, self.layer_dict, intermediate_outputs
+        return final_outputs
