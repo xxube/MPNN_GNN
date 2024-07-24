@@ -118,3 +118,4 @@ class CustomModel(nn.Module):
         if return_layers_info:
             return outputs, ligand_inputs, self.layers_dict, intermediate_dict
         return outputs
+
