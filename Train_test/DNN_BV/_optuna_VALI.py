@@ -1,64 +1,66 @@
-import optuna
+import os
+import sys
+import json
+import time
+import random
+import datetime
+import argparse
+import pickle
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import dgl
 import pandas as pd
 import numpy as np
-import os
-import time
-import pickle
-import datetime
-import json
-import copy
-import math
-import argparse
 import glob
-import random
-import sys
+import math
+import copy
 
 from sklearn.linear_model import LinearRegression
 
-currentdir = os.path.dirname(os.path.realpath(__file__))
-sys.path.insert(1, currentdir + "/../../Model")
-sys.path.insert(1, currentdir + "/../..")
-_func = __import__("_func")
+# Set current directory and insert paths for custom modules
+current_directory = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(1, current_directory + "/../../Model")
+sys.path.insert(1, current_directory + "/../..")
+func_module = __import__("_func")
 
-# Get CPU/GPU
+# Set device to GPU if available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Helper function to get data
-get_data = _func.get_data
+get_data = func_module.get_data
 
-# Model defining
-def create_model(trial_setup_dict):
-    print("Model ...")
-    GNN_model = __import__(trial_setup_dict['modeltype_pyfilename'])
-    model = GNN_model.MODEL(trial_setup_dict['model']).to(device)
+# Model creation function
+def initialize_model(config):
+    print("Initializing Model ...")
+    GNN_model = __import__(config['modeltype_pyfilename'])
+    model = GNN_model.MODEL(config['model']).to(device)
     return model
 
-def create_optimizer(trial_setup_dict, model):
-    print("Optimizer ...")
-    optimizer_chosen = trial_setup_dict["optimizer_chosen"]
-    kwargs = trial_setup_dict[optimizer_chosen]
-    optimizer = getattr(optim, optimizer_chosen)(model.parameters(), **kwargs)
+# Optimizer creation function
+def initialize_optimizer(config, model):
+    print("Initializing Optimizer ...")
+    optimizer_type = config["optimizer_chosen"]
+    optimizer_params = config[optimizer_type]
+    optimizer = getattr(optim, optimizer_type)(model.parameters(), **optimizer_params)
     return optimizer
 
-def learn(model, optimizer, train_loader, loss_mode, mode="eval", training_seed=None):
-    if mode == "train" and training_seed is None:
-        raise ValueError("ERROR, require to set a training seed")
+# Training and evaluation function
+def train_or_evaluate(model, optimizer, data_loader, loss_type, mode="eval", seed=None):
+    if mode == "train" and seed is None:
+        raise ValueError("ERROR: Training seed is required for training mode")
 
-    criterion = nn.MSELoss() if loss_mode == "MAE" else nn.L1Loss()
-
+    criterion = nn.MSELoss() if loss_type == "MAE" else nn.L1Loss()
+    
     if mode == "train":
         model.train()
     else:
         model.eval()
 
-    epoch_loss = 0
-    total = 0
+    total_loss = 0
+    total_samples = 0
 
-    for features, labels in train_loader:
+    for features, labels in data_loader:
         features, labels = features.to(device), labels.to(device)
 
         if mode == "train":
@@ -71,142 +73,143 @@ def learn(model, optimizer, train_loader, loss_mode, mode="eval", training_seed=
             loss.backward()
             optimizer.step()
 
-        total += labels.size(0)
-        epoch_loss = (epoch_loss * (total - labels.size(0)) + loss.item() * labels.size(0)) / total
+        total_samples += labels.size(0)
+        total_loss = (total_loss * (total_samples - labels.size(0)) + loss.item() * labels.size(0)) / total_samples
 
     if mode == "eval":
-        print("Eval ...")
+        print("Evaluating ...")
 
-    return epoch_loss
+    return total_loss
 
-def evaluate(model, optimizer, test_loader, trial_setup_dict):
-    method = trial_setup_dict["eval_method"]
+# Evaluation function for different methods
+def evaluate_model(model, optimizer, data_loader, config):
+    method = config["eval_method"]
 
     if method == "default":
-        loss_mode = trial_setup_dict['loss_mode']
-        return learn(model, optimizer, test_loader, loss_mode, "eval_silent")
+        loss_type = config['loss_mode']
+        return train_or_evaluate(model, optimizer, data_loader, loss_type, "eval")
     elif method == "r_square":
-        # Pretreatment
-        test_features = np.concatenate([x.numpy() for x, _ in test_loader])
-        test_values = np.concatenate([y.numpy() for _, y in test_loader])
+        test_features = np.concatenate([x.numpy() for x, _ in data_loader])
+        test_labels = np.concatenate([y.numpy() for _, y in data_loader])
         with torch.no_grad():
-            pred = model(torch.tensor(test_features).float().to(device)).cpu().numpy()
-        real = test_values
-        _pred = np.array(pred).reshape(-1, 1)
-        _real = np.array(real)
-        linreg = LinearRegression(normalize=False, fit_intercept=True).fit(_pred, _real)
+            predictions = model(torch.tensor(test_features).float().to(device)).cpu().numpy()
+        
+        predictions = np.array(predictions).reshape(-1, 1)
+        real_values = np.array(test_labels)
+        
+        linreg = LinearRegression(normalize=False, fit_intercept=True).fit(predictions, real_values)
         linreg.coef_ = np.array([1])
         linreg.intercept_ = 0
-        get_r_square = linreg.score(_pred, _real)
-        return get_r_square
+        
+        r_square = linreg.score(predictions, real_values)
+        return r_square
 
-def objective(trial, optuna_setup_dict, mode="trial"):
-    print("Objective ...")
+# Objective function for Optuna
+def objective(trial, optuna_config, mode="trial"):
+    print("Starting Objective ...")
 
     if mode == "trial":
-        # Initialize trial
-        for k, v in optuna_setup_dict.items():
-            if isinstance(v, dict):
-                v_type = list(v.keys())[0]
-                if v_type == 'categorical':
-                    v_choices = v[v_type]
-                    trial.suggest_categorical(k, v_choices)
-                elif v_type == 'discrete_uniform':
-                    v_low, v_high, v_q = v[v_type]
-                    trial.suggest_discrete_uniform(k, v_low, v_high, v_q)
-                elif v_type in ['float', 'int']:
-                    v_low, v_high = v[v_type][:2]
-                    v_step = v[v_type][2].get('step') if len(v[v_type]) > 2 else None
-                    v_log = v[v_type][2].get('log') if len(v[v_type]) > 2 else False
-                    if v_step and v_log:
-                        raise ValueError(f"ERROR at {k}, step and log cannot be used together")
-                    if v_type == 'float':
-                        trial.suggest_float(k, v_low, v_high, step=v_step, log=v_log)
-                    elif v_type == 'int':
-                        trial.suggest_int(k, v_low, v_high, step=v_step, log=v_log)
-                elif v_type in ['loguniform', 'uniform']:
-                    v_low, v_high = v[v_type]
-                    if v_type == 'loguniform':
-                        trial.suggest_loguniform(k, v_low, v_high)
-                    elif v_type == 'uniform':
-                        trial.suggest_uniform(k, v_low, v_high)
+        for key, value in optuna_config.items():
+            if isinstance(value, dict):
+                param_type = list(value.keys())[0]
+                if param_type == 'categorical':
+                    choices = value[param_type]
+                    trial.suggest_categorical(key, choices)
+                elif param_type == 'discrete_uniform':
+                    low, high, q = value[param_type]
+                    trial.suggest_discrete_uniform(key, low, high, q)
+                elif param_type in ['float', 'int']:
+                    low, high = value[param_type][:2]
+                    step = value[param_type][2].get('step') if len(value[param_type]) > 2 else None
+                    log = value[param_type][2].get('log') if len(value[param_type]) > 2 else False
+                    if step and log:
+                        raise ValueError(f"ERROR: {key}, step and log cannot be used together")
+                    if param_type == 'float':
+                        trial.suggest_float(key, low, high, step=step, log=log)
+                    elif param_type == 'int':
+                        trial.suggest_int(key, low, high, step=step, log=log)
+                elif param_type in ['loguniform', 'uniform']:
+                    low, high = value[param_type]
+                    if param_type == 'loguniform':
+                        trial.suggest_loguniform(key, low, high)
+                    elif param_type == 'uniform':
+                        trial.suggest_uniform(key, low, high)
                 else:
-                    raise ValueError(f"ERROR v_type {k}, {v}")
+                    raise ValueError(f"ERROR: Unknown parameter type {key}, {value}")
             else:
-                trial.set_user_attr(k, v)
+                trial.set_user_attr(key, value)
 
-        trial_setup_dict = {}
-        for _dict in [trial.user_attrs, trial.params]:
-            for k, v in _dict.items():
-                if "|" in k:
-                    _kname_list = k.split("|")
-                    _kname_list.reverse()
-                    _dict = v
-                    for _kname in _kname_list:
-                        _dict = {_kname: _dict}
-                    merge_dicts(trial_setup_dict, _dict)
+        config = {}
+        for dictionary in [trial.user_attrs, trial.params]:
+            for key, value in dictionary.items():
+                if "|" in key:
+                    key_list = key.split("|")
+                    key_list.reverse()
+                    nested_dict = value
+                    for sub_key in key_list:
+                        nested_dict = {sub_key: nested_dict}
+                    merge_dicts(config, nested_dict)
                 else:
-                    trial_setup_dict[k] = v
+                    config[key] = value
     elif mode in ["simple_train", "cont_train"]:
-        trial_setup_dict = copy.deepcopy(optuna_setup_dict)
+        config = copy.deepcopy(optuna_config)
 
-    trial_setup_dict['input_ndata_dim'] = len(trial_setup_dict['input_ndata_list'])
-    trial_setup_dict['input_edata_dim'] = len(trial_setup_dict['input_edata_list'])
-    devid_suffix = trial_setup_dict['devid_suffix']
+    config['input_ndata_dim'] = len(config['input_ndata_list'])
+    config['input_edata_dim'] = len(config['input_edata_list'])
 
     z = datetime.datetime.now()
-    study_foldername = trial_setup_dict['study_foldername']
+    study_foldername = config['study_foldername']
     if mode != "cont_train":
-        modeltrained_foldername = f"_{study_foldername}_{z.date()}_{z.hour:02d}_{z.minute:02d}_s{z.second:02d}_ms{z.microsecond:06d}_model".replace("-", "")
-        trial_setup_dict['modeltrained_foldername'] = modeltrained_foldername
+        model_foldername = f"_{study_foldername}_{z.date()}_{z.hour:02d}_{z.minute:02d}_s{z.second:02d}_ms{z.microsecond:06d}_model".replace("-", "")
+        config['model_foldername'] = model_foldername
     else:
-        loss_mode = trial_setup_dict['loss_mode']
-        modeltrained_foldername_prev = trial_setup_dict['modeltrained_foldername']
-        trial_setup_dict['modeltrained_foldername'] = f"{modeltrained_foldername_prev}_##{loss_mode}_CONT"
-        modeltrained_foldername = trial_setup_dict['modeltrained_foldername']
-    saving_dir = os.path.join(currentdir, modeltrained_foldername)
+        loss_mode = config['loss_mode']
+        previous_model_foldername = config['model_foldername']
+        config['model_foldername'] = f"{previous_model_foldername}_##{loss_mode}_CONT"
+        model_foldername = config['model_foldername']
+    save_directory = os.path.join(current_directory, model_foldername)
 
-    stdoutOrigin = sys.stdout
-    log_filename = "_TEST_trainlog" if trial_setup_dict.get('_test_mode') == "1" else f"{modeltrained_foldername}_trainlog"
+    stdout_origin = sys.stdout
+    log_filename = "_TEST_trainlog" if config.get('_test_mode') == "1" else f"{model_foldername}_trainlog"
     sys.stdout = open(log_filename, "w")
 
-    if trial_setup_dict.get('training_seed') is None:
-        trial_setup_dict['training_seed'] = random.randint(0, 9999)
-    training_seed = trial_setup_dict['training_seed']
+    if config.get('training_seed') is None:
+        config['training_seed'] = random.randint(0, 9999)
+    training_seed = config['training_seed']
 
-    print('trial_setup_dict')
-    print(json.dumps(trial_setup_dict, indent=4))
-    print('training_seed=', training_seed)
+    print('Config:')
+    print(json.dumps(config, indent=4))
+    print('Training Seed:', training_seed)
 
-    trial_begin = time.time()
+    trial_start_time = time.time()
 
-    _output_data_dict = _func.get_data(
-        trial_setup_dict,
-        batch_size=trial_setup_dict['batch_size'],
-        test_split=trial_setup_dict['test_split'],
-        vali_split=trial_setup_dict['vali_split'],
-        currentdir=currentdir,
+    data = get_data(
+        config,
+        batch_size=config['batch_size'],
+        test_split=config['test_split'],
+        vali_split=config['vali_split'],
+        currentdir=current_directory,
         return_indexes=True
     )
-    dummy_train_dataset = _output_data_dict['stage1_train_dataset']
-    train_dataset = _output_data_dict['train_dataset']
-    dummy_vali_dataset = _output_data_dict['stage1_vali_dataset']
-    vali_dataset = _output_data_dict['vali_dataset']
-    dummy_test_dataset = _output_data_dict['stage1_test_dataset']
-    test_dataset = _output_data_dict['test_dataset']
+    dummy_train_data = data['stage1_train_dataset']
+    train_data = data['train_dataset']
+    dummy_vali_data = data['stage1_vali_dataset']
+    vali_data = data['vali_dataset']
+    dummy_test_data = data['stage1_test_dataset']
+    test_data = data['test_dataset']
 
-    node_num_info = _output_data_dict['node_num_info']
-    train_vali_test_indexes = _output_data_dict['train_vali_test_indexes']
+    node_info = data['node_num_info']
+    data_indexes = data['train_vali_test_indexes']
 
-    if trial_setup_dict.get('node_num_info') is None:
-        trial_setup_dict['node_num_info'] = node_num_info
+    if config.get('node_num_info') is None:
+        config['node_num_info'] = node_info
 
-    model = create_model(trial_setup_dict)
-    optimizer = create_optimizer(trial_setup_dict, model)
+    model = initialize_model(config)
+    optimizer = initialize_optimizer(config, model)
 
     if mode == "cont_train":
-        print("...Restoring checkpoint")
-        checkpoint = torch.load(os.path.join(currentdir, modeltrained_foldername_prev, modeltrained_foldername_prev, "model.pth"))
+        print("Restoring checkpoint ...")
+        checkpoint = torch.load(os.path.join(current_directory, previous_model_foldername, previous_model_foldername, "model.pth"))
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     else:
@@ -215,9 +218,14 @@ def objective(trial, optuna_setup_dict, mode="trial"):
             'optimizer_state_dict': optimizer.state_dict(),
         }
 
-    stage1_cutoff = trial_setup_dict['stage1_cutoff']
-    stage1_skip = trial_setup_dict.get('stage1_skip')
-    stage2_converge = trial_setup_dict.get('stage2_converge', 0.0)
-    stage2_fluctuate_dv = trial_setup_dict['stage2_fluctuate_dv']
-    stage2_fluctuate_pc = trial_setup_dict['stage2_fluctuate_pc']
-    loss_mode
+    stage1_cutoff = config['stage1_cutoff']
+    stage1_skip = config.get('stage1_skip')
+    stage2_converge = config.get('stage2_converge', 0.0)
+    stage2_fluctuate_dv = config['stage2_fluctuate_dv']
+    stage2_fluctuate_pc = config['stage2_fluctuate_pc']
+    loss_mode = config['loss_mode']
+    # Additional logic for training and evaluation can be added here
+
+if __name__ == "__main__":
+    # Argument parsing and other initial setups can be added here
+    pass
