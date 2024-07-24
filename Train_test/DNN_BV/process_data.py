@@ -5,100 +5,101 @@ import numpy as np
 import argparse
 import torch
 import torch.nn as nn
+import sys
 
-def parse_arguments():
+def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('model_dirname', type=str)
-    parser.add_argument('_optuna_filename', type=str)
+    parser.add_argument('model_directory', type=str)
+    parser.add_argument('optuna_file', type=str)
     args = parser.parse_args()
-    args._optuna_filename = args._optuna_filename.replace(".py", "")
+    args.optuna_file = args.optuna_file.replace(".py", "")
     return args
 
-def load_optuna_module(currentdir, _optuna_filename):
-    sys.path.insert(1, currentdir)
-    return __import__(_optuna_filename)
+def import_optuna_module(current_directory, optuna_file):
+    sys.path.insert(1, current_directory)
+    return __import__(optuna_file)
 
-def restore_checkpoint(model, optimizer, model_dir):
-    checkpoint = torch.load(model_dir)
+def load_checkpoint(model, optimizer, checkpoint_path):
+    checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     return model, optimizer
 
-def extract_model_architecture(model):
-    model_arch = {}
+def get_model_architecture(model):
+    architecture = {}
     for name, param in model.named_parameters():
         if 'weight' in name or 'bias' in name:
-            model_arch[name] = param.detach().numpy().tolist()
-    return model_arch
+            architecture[name] = param.detach().numpy().tolist()
+    return architecture
 
-def process_data(model, features, labels, weighting_rule, model_arch):
+def evaluate_model(model, features, labels, weighting_rule, architecture):
     model.eval()
     with torch.no_grad():
         y_pred = model(features).squeeze().numpy()
-    outputs = {
+    results = {
         "y_pred": y_pred,
         "y_true": labels
     }
-    for name, value in weighting_rule.items():
-        layer, idx = value.split("|")
+    for name, rule in weighting_rule.items():
+        layer, idx = rule.split("|")
         idx = int(idx)
-        weights = model_arch[f"{layer}.weight"][idx]
-        outputs[f"{name}_Weighted"] = [weights * x for x in y_pred]
-    return outputs
+        weights = architecture[f"{layer}.weight"][idx]
+        results[f"{name}_Weighted"] = [weights * x for x in y_pred]
+    return results
 
 def main():
-    args = parse_arguments()
-    currentdir = os.getcwd()
+    args = get_args()
+    current_directory = os.getcwd()
 
-    with open(os.path.join(currentdir, args.model_dirname, f"{args.model_dirname}_setting"), "r") as input_file:
-        trial_setup_dict = json.load(input_file)
+    with open(os.path.join(current_directory, args.model_directory, f"{args.model_directory}_setting"), "r") as input_file:
+        trial_setup = json.load(input_file)
 
-    _optuna = load_optuna_module(currentdir, args._optuna_filename)
+    optuna_module = import_optuna_module(current_directory, args.optuna_file)
 
-    model_dir = os.path.join(currentdir, args.model_dirname, args.model_dirname)
-    data_dict = _optuna.get_data(
-        trial_setup_dict=trial_setup_dict,
+    model_path = os.path.join(current_directory, args.model_directory, args.model_directory)
+    data = optuna_module.get_data(
+        trial_setup_dict=trial_setup,
         batch_size=10000000,
-        test_split=trial_setup_dict['test_split'],
-        vali_split=trial_setup_dict['vali_split'],
-        currentdir=currentdir,
+        test_split=trial_setup['test_split'],
+        vali_split=trial_setup['vali_split'],
+        currentdir=current_directory,
         as_dataset=False,
     )
 
-    model = _optuna.create_model(trial_setup_dict)
-    optimizer = _optuna.create_optimizer(trial_setup_dict)
-    model, optimizer = restore_checkpoint(model, optimizer, os.path.join(model_dir, "model.pth"))
+    model = optuna_module.create_model(trial_setup)
+    optimizer = optuna_module.create_optimizer(trial_setup)
+    model, optimizer = load_checkpoint(model, optimizer, os.path.join(model_path, "model.pth"))
 
-    model_arch = extract_model_architecture(model)
+    architecture = get_model_architecture(model)
 
-    output_df = None
+    output_dataframe = None
     for data_type in ['train', 'vali', 'test']:
-        tags = data_dict[f'{data_type}_tag'].values.tolist()
-        rct_id = [x.split("_")[0] for x in tags]
-        lig_id = [x.split("_")[1] for x in tags]
-        features = torch.tensor(data_dict[f'{data_type}_features']).float()
-        values = torch.tensor(data_dict[f'{data_type}_values']).float()
+        tags = data[f'{data_type}_tag'].values.tolist()
+        rct_ids = [tag.split("_")[0] for tag in tags]
+        lig_ids = [tag.split("_")[1] for tag in tags]
+        features = torch.tensor(data[f'{data_type}_features']).float()
+        labels = torch.tensor(data[f'{data_type}_values']).float()
 
-        outputs = process_data(model, features, values, weighting_rule, model_arch)
-        outputs.update({
+        results = evaluate_model(model, features, labels, weighting_rule, architecture)
+        results.update({
             "data_type": [data_type] * len(tags),
             "tag": tags,
-            "rct_id": rct_id,
-            "lig_id": lig_id,
+            "rct_id": rct_ids,
+            "lig_id": lig_ids,
         })
 
-        current_output_df = pd.DataFrame.from_dict(outputs)
-        if output_df is None:
-            output_df = current_output_df
+        current_output_df = pd.DataFrame.from_dict(results)
+        if output_dataframe is None:
+            output_dataframe = current_output_df
         else:
-            output_df = pd.concat([output_df, current_output_df], ignore_index=True)
+            output_dataframe = pd.concat([output_dataframe, current_output_df], ignore_index=True)
 
-    output_df.sort_values(by=["rct_id", "lig_id"], inplace=True)
-    output_df.to_csv(os.path.join(currentdir, args.model_dirname, "_INT_dict.csv"), index=False)
+    output_dataframe.sort_values(by=["rct_id", "lig_id"], inplace=True)
+    output_dataframe.to_csv(os.path.join(current_directory, args.model_directory, "_INT_dict.csv"), index=False)
 
-    result = {"model_arch": model_arch}
-    with open(os.path.join(currentdir, args.model_dirname, "_TrainedModel_INFO"), "w") as output_file:
-        json.dump(result, output_file, indent=4)
+    model_info = {"model_architecture": architecture}
+    with open(os.path.join(current_directory, args.model_directory, "_TrainedModel_INFO"), "w") as output_file:
+        json.dump(model_info, output_file, indent=4)
 
 if __name__ == "__main__":
     main()
