@@ -6,73 +6,63 @@ import dgl.function as fn
 
 class MPNN(nn.Module):
     
-    def __init__(self, _setup_dict):
+    def __init__(self, config):
         super(MPNN, self).__init__()
 
-        message_dim = _setup_dict['message_dim']
-        hidden_dim = _setup_dict['hidden_dim']
-        layer_num = _setup_dict['layer_num']
-        use_bias = _setup_dict['use_bias']
-        activation = _setup_dict['activation']
-        activation_alpha = _setup_dict.get('activation_alpha', 0.01)
-        include_edge_feat = _setup_dict['include_edge_feat']
-        repeat_msgANDhidden_layer  = _setup_dict['repeat_msgANDhidden_layer']
+        self.message_dim = config['message_dim']
+        self.hidden_dim = config['hidden_dim']
+        self.num_layers = config['layer_num']
+        self.use_bias = config['use_bias']
+        self.include_edge_feat = config['include_edge_feat']
+        self.repeat_layers = config['repeat_msgANDhidden_layer']
+
+        activation = config['activation']
+        self.activation_alpha = config.get('activation_alpha', 0.01)
+        self.activation = nn.LeakyReLU(self.activation_alpha) if activation.lower() == "leakyrelu" else getattr(F, activation)
         
-        self.layer_num = layer_num
-        self.include_edge_feat = include_edge_feat
-        self.repeat_msgANDhidden_layer = repeat_msgANDhidden_layer
+        self.current_layer_idx = 0
+        self.message_layers = nn.ModuleList()
+        self.hidden_layers = nn.ModuleList()
 
-        if activation.lower() == "leakyrelu":
-            self.activation = nn.LeakyReLU(activation_alpha)
+        if self.repeat_layers:
+            self.message_layers.append(nn.Linear(self.message_dim, self.message_dim, bias=self.use_bias))
+            self.hidden_layers.append(nn.Linear(self.hidden_dim, self.hidden_dim, bias=self.use_bias))
         else:
-            self.activation = getattr(F, activation)
-        
-        self.current_layer = 0
-        self.dense_message_list = nn.ModuleList()
-        self.dense_hidden_list = nn.ModuleList()
+            for _ in range(self.num_layers):
+                self.message_layers.append(nn.Linear(self.message_dim, self.message_dim, bias=self.use_bias))
+                self.hidden_layers.append(nn.Linear(self.hidden_dim, self.hidden_dim, bias=self.use_bias))
 
-        if not repeat_msgANDhidden_layer:
-            for _ in range(self.layer_num):
-                self.dense_message_list.append(nn.Linear(message_dim, message_dim, bias=use_bias))
-                self.dense_hidden_list.append(nn.Linear(hidden_dim, hidden_dim, bias=use_bias))
-        else:
-            self.dense_message_list.append(nn.Linear(message_dim, message_dim, bias=use_bias))
-            self.dense_hidden_list.append(nn.Linear(hidden_dim, hidden_dim, bias=use_bias))
-
-    def message_func(self, edges):
+    def compute_message(self, edges):
         if self.include_edge_feat:
-            m_input = torch.cat([edges.src['h_n'], edges.dst['h_n'], edges.data['h_e']], dim=-1)
+            message_input = torch.cat([edges.src['h_n'], edges.dst['h_n'], edges.data['h_e']], dim=-1)
         else:
-            m_input = torch.cat([edges.src['h_n'], edges.dst['h_n']], dim=-1)
-        m_out = self.activation(self.dense_message_list[self.current_layer](m_input))
-        return {'m': m_out}
+            message_input = torch.cat([edges.src['h_n'], edges.dst['h_n']], dim=-1)
+        message_output = self.activation(self.message_layers[self.current_layer_idx](message_input))
+        return {'message': message_output}
 
-    def update_func(self, nodes):
-        h_input = torch.cat([nodes.data['m_sum'], nodes.data['h_n']], dim=-1)
-        h_out = self.activation(self.dense_hidden_list[self.current_layer](h_input))
-        if not self.repeat_msgANDhidden_layer:
-            self.current_layer += 1
-        return {'h_n': h_out}
+    def apply_update(self, nodes):
+        hidden_input = torch.cat([nodes.data['message_sum'], nodes.data['h_n']], dim=-1)
+        hidden_output = self.activation(self.hidden_layers[self.current_layer_idx](hidden_input))
+        if not self.repeat_layers:
+            self.current_layer_idx += 1
+        return {'h_n': hidden_output}
         
-    def forward(self, graph_list):
-        graph = graph_list
-
+    def forward(self, graph):
         with graph.local_scope():
-            for _ in range(self.layer_num):
+            for _ in range(self.num_layers):
                 graph.update_all(
-                    self.message_func,
-                    fn.sum('m', 'm_sum'),
-                    self.update_func
+                    self.compute_message,
+                    fn.sum('message', 'message_sum'),
+                    self.apply_update
                 )
             
-            nodes_label_list = torch.unique(graph.ndata['id'])
-            nodes_label_len = nodes_label_list.shape[0]
-            split_pattern = [nodes_label_len] * (graph.num_nodes() // nodes_label_len)
+            unique_node_labels = torch.unique(graph.ndata['id'])
+            num_unique_labels = unique_node_labels.shape[0]
+            split_sizes = [num_unique_labels] * (graph.num_nodes() // num_unique_labels)
 
-            self.current_layer = 0
+            self.current_layer_idx = 0
             
             return torch.squeeze(
-                torch.split(graph.ndata['h_n'], split_pattern)
+                torch.split(graph.ndata['h_n'], split_sizes)
             )
-
 
